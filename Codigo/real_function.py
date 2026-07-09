@@ -96,6 +96,23 @@ class Real_function:
 
         return shap_score
 
+    def Banzhaf(self, L, i):
+        assert len(L) == self.n_features, "Input has the wrong number of features"
+        assert all(value in (-1, 1) for value in L), "Input values must be -1 or 1"
+        assert 1 <= i <= self.n_features, "Feature is outside the valid range"
+
+        features_without_i = [
+            feature for feature in range(1, self.n_features + 1) if feature != i
+        ]
+        banzhaf_score = 0
+
+        for size in range(self.n_features):
+            for S_tuple in combinations(features_without_i, size):
+                S = set(S_tuple)
+                banzhaf_score += self.mu(L, S | {i}) - self.mu(L, S)
+
+        return banzhaf_score / (2 ** (self.n_features - 1))
+
     def parity(self, S):
         S = list(S)
         assert len(S) == len(set(S)), "S contains repeated features"
@@ -184,6 +201,22 @@ def spectrum(g, L):
     return result
 
 
+def Fourier_coefficients(g):
+    assert hasattr(g, "dim"), "Input must be a real function"
+    assert hasattr(g, "value"), "Input must be a real function"
+
+    n_features = g.dim()
+    result = {}
+
+    for size in range(n_features + 1):
+        for S_tuple in combinations(range(1, n_features + 1), size):
+            S = set(S_tuple)
+            parity_function = Real_function(n_features, S)
+            result[frozenset(S)] = inner_product(g, parity_function)
+
+    return result
+
+
 def _format_subset(S):
     if len(S) == 0:
         return "{}"
@@ -192,6 +225,19 @@ def _format_subset(S):
 
 
 def print_spectrum(g, L, show_zeros=True, decimals=16):
+    """
+    Prints the spectrum of g evaluated at input L.
+
+    Input:
+        g: A real function of dimension n.
+        L: A list of length n with entries in {-1, 1}.
+        show_zeros: If True, print zero entries. If False, omit them.
+        decimals: Number of decimal places to print.
+
+    Output:
+        Prints one line for each subset S of {1, ..., n}. The printed value is
+        <g, chi_S> * chi_S(L), where chi_S is the parity function for S.
+    """
     assert isinstance(decimals, int), "Number of decimals must be an integer"
     assert decimals >= 0, "Number of decimals must be non-negative"
 
@@ -210,7 +256,54 @@ def print_spectrum(g, L, show_zeros=True, decimals=16):
         print(f"{subset_string:<{width}} : {value:.{decimals}f}")
 
 
+def print_Fourier_coefficients(g, show_zeros=True, decimals=16):
+    """
+    Prints the Fourier coefficients of g in the parity-function basis.
+
+    Input:
+        g: A real function of dimension n.
+        show_zeros: If True, print zero coefficients. If False, omit them.
+        decimals: Number of decimal places to print.
+
+    Output:
+        Prints one line for each subset S of {1, ..., n}. The printed value is
+        the Fourier coefficient <g, chi_S>, where chi_S is the parity function
+        for S.
+    """
+    assert isinstance(decimals, int), "Number of decimals must be an integer"
+    assert decimals >= 0, "Number of decimals must be non-negative"
+
+    values = Fourier_coefficients(g)
+    sorted_subsets = sorted(values.keys(), key=lambda S: (len(S), sorted(S)))
+
+    if not show_zeros:
+        sorted_subsets = [S for S in sorted_subsets if values[S] != 0]
+
+    subset_strings = [_format_subset(S) for S in sorted_subsets]
+    width = max([len(subset) for subset in subset_strings] + [0])
+
+    print("Fourier coefficients:")
+    for S, subset_string in zip(sorted_subsets, subset_strings):
+        value = 0 if abs(values[S]) < 1e-12 else values[S]
+        print(f"{subset_string:<{width}} : {value:.{decimals}f}")
+
+
 def print_SHAP_spectrum(g, L, i, show_zeros=True, decimals=16):
+    """
+    Prints the SHAP spectral decomposition of feature i at input L.
+
+    Input:
+        g: A real function of dimension n.
+        L: A list of length n with entries in {-1, 1}.
+        i: A feature index with 1 <= i <= n.
+        show_zeros: If True, print zero entries. If False, omit them.
+        decimals: Number of decimal places to print.
+
+    Output:
+        Prints one line for each subset S containing i. The printed value is
+        spectrum(g, L)[S] / |S|. The last line prints the sum of these values,
+        which is the SHAP score of feature i at L.
+    """
     assert hasattr(g, "dim"), "Input must be a real function"
     assert hasattr(g, "value"), "Input must be a real function"
     assert len(L) == g.dim(), "Input has the wrong number of features"
@@ -245,7 +338,74 @@ def print_SHAP_spectrum(g, L, i, show_zeros=True, decimals=16):
     print(f"SHAP score : {shap_score:.{decimals}f}")
 
 
+def print_Banzhaf_spectrum(g, L, i, show_zeros=True, decimals=16):
+    """
+    Prints the Banzhaf spectral decomposition of feature i at input L.
+
+    Input:
+        g: A real function of dimension n.
+        L: A list of length n with entries in {-1, 1}.
+        i: A feature index with 1 <= i <= n.
+        show_zeros: If True, print zero entries. If False, omit them.
+        decimals: Number of decimal places to print.
+
+    Output:
+        Prints one line for each subset S containing i. The printed value is
+        spectrum(g, L)[S] / 2^(|S|-1). The last line prints the sum of these
+        values, which is the Banzhaf score of feature i at L.
+    """
+    assert hasattr(g, "dim"), "Input must be a real function"
+    assert hasattr(g, "value"), "Input must be a real function"
+    assert len(L) == g.dim(), "Input has the wrong number of features"
+    assert all(value in (-1, 1) for value in L), "Input values must be -1 or 1"
+    assert 1 <= i <= g.dim(), "Feature is outside the valid range"
+    assert isinstance(decimals, int), "Number of decimals must be an integer"
+    assert decimals >= 0, "Number of decimals must be non-negative"
+
+    spectrum_values = spectrum(g, L)
+    banzhaf_values = {}
+
+    for S, value in spectrum_values.items():
+        if i in S:
+            banzhaf_values[S] = value / (2 ** (len(S) - 1))
+
+    sorted_subsets = sorted(
+        banzhaf_values.keys(), key=lambda S: (len(S), sorted(S))
+    )
+
+    if not show_zeros:
+        sorted_subsets = [S for S in sorted_subsets if banzhaf_values[S] != 0]
+
+    subset_strings = [_format_subset(S) for S in sorted_subsets]
+    width = max([len(subset) for subset in subset_strings] + [0])
+    banzhaf_score = 0
+
+    print(f"Banzhaf spectrum for feature {i}:")
+    for S, subset_string in zip(sorted_subsets, subset_strings):
+        value = 0 if abs(banzhaf_values[S]) < 1e-12 else banzhaf_values[S]
+        banzhaf_score += value
+        print(f"{subset_string:<{width}} : {value:.{decimals}f}")
+
+    banzhaf_score = 0 if abs(banzhaf_score) < 1e-12 else banzhaf_score
+    print(f"Banzhaf score : {banzhaf_score:.{decimals}f}")
+
+
 def print_SR_spectrum(g, L, S, show_zeros=True, decimals=16):
+    """
+    Prints the SR spectrum determined by subset S at input L.
+
+    Input:
+        g: A real function of dimension n.
+        L: A list of length n with entries in {-1, 1}.
+        S: A subset of {1, ..., n}.
+        show_zeros: If True, print zero entries. If False, omit them.
+        decimals: Number of decimal places to print.
+
+    Output:
+        Prints one line for each subset T such that T is not a subset of S.
+        The printed value is spectrum(g, L)[T]. The last line prints the sum
+        of these values.
+    """
     assert hasattr(g, "dim"), "Input must be a real function"
     assert hasattr(g, "value"), "Input must be a real function"
     assert len(L) == g.dim(), "Input has the wrong number of features"
